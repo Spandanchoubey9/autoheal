@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: autoheal-postgres
+spec:
+  selector:
+    app: autoheal-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autoheal-postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: autoheal-postgres
+spec:
+  serviceName: autoheal-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoheal-postgres
+  template:
+    metadata:
+      labels:
+        app: autoheal-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: autoheal_db
+            - name: POSTGRES_USER
+              value: autoheal_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: autoheal-db-secret
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: autoheal-postgres-pvc
+        - name: postgres-init
+          configMap:
+            name: autoheal-db-init
