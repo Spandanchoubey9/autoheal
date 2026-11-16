@@ -26,6 +26,8 @@ build/
 *.tfstate.*
 *.tfvars
 *.tfvars.json
+*.tfplan
+*.plan
 
 # Kubernetes credentials
 kubeconfig
