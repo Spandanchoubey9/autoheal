@@ -93,7 +93,7 @@ function App() {
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        'Unable to connect to the AutoHeal backend. Check that the backend is running.'
+        'Unable to connect to the ManualHeal backend. Check that the backend is running.'
       );
     } finally {
       setLoading(false);
@@ -234,7 +234,7 @@ function App() {
           </div>
 
           <div>
-            <h1>AutoHeal</h1>
+            <h1>ManualHeal</h1>
             <span>Cloud Operations</span>
           </div>
         </div>
@@ -266,7 +266,7 @@ function App() {
           </div>
 
           <div className="sidebar-footer">
-            <span>AutoHeal</span>
+            <span>ManualHeal</span>
             <span>v1.0.0</span>
           </div>
         </div>
@@ -317,7 +317,7 @@ function App() {
         <section className="page-content">
           <div className="page-heading">
             <div>
-              <div className="eyebrow">AUTOHEAL / MONITORING</div>
+              <div className="eyebrow">MANUALHEAL / MONITORING</div>
               <h1>{activePage}</h1>
               <p>{pageDescription[activePage]}</p>
             </div>
@@ -396,7 +396,7 @@ function App() {
                       <div className="panel-heading">
                         <div>
                           <h3>Application services</h3>
-                          <p>Services registered in AutoHeal</p>
+                          <p>Services registered in ManualHeal</p>
                         </div>
 
                         <span className="count-pill">
@@ -743,7 +743,7 @@ function App() {
 
           <footer className="page-footer">
             <span>
-              AutoHeal Cloud Monitoring &amp; Self-Recovery Platform
+              ManualHeal Cloud Monitoring &amp; Self-Recovery Platform
             </span>
             <span>Built for cloud-native operations</span>
           </footer>
