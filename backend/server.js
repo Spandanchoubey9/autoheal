@@ -9,12 +9,12 @@ const serviceRoutes = require('./routes/serviceRoutes');
 const incidentRoutes = require('./routes/incidentRoutes');
 
 const app = express();
+const monitoringRoutes = require('./routes/monitoringRoutes');
 
 // Middleware must execute before routes
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
-
 // Root endpoint
 app.get('/', (req, res) => {
     res.json({
@@ -46,6 +46,7 @@ app.get('/api/health', async (req, res) => {
 // API routes
 app.use('/api/services', serviceRoutes);
 app.use('/api/incidents', incidentRoutes);
+app.use('/api/metrics', monitoringRoutes);
 
 const PORT = process.env.PORT || 5000;
 
