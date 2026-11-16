@@ -1,3 +1,4 @@
+
 import { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
@@ -22,6 +23,8 @@ import {
   getHealth,
   getServices,
   getIncidents,
+  getMetrics,
+  getMonitoringTargets,
   resolveIncident,
 } from './services/api';
 
@@ -66,6 +69,13 @@ function App() {
   const [error, setError] = useState('');
   const [resolving, setResolving] = useState(null);
 
+  // Prometheus monitoring state
+  const [metrics, setMetrics] = useState(null);
+  const [monitoringTargets, setMonitoringTargets] = useState(null);
+  const [metricsError, setMetricsError] = useState('');
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
+  // Load application dashboard data
   const loadDashboard = useCallback(async () => {
     setError('');
 
@@ -90,46 +100,102 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-  let cancelled = false;
-
-  const fetchDashboard = async () => {
-    setError('');
+  // Load Prometheus metrics and target health
+  const loadMonitoringData = useCallback(async () => {
+    setMetricsLoading(true);
 
     try {
-      const [healthResult, servicesResult, incidentsResult] =
-        await Promise.all([
-          getHealth(),
-          getServices(),
-          getIncidents(),
-        ]);
+      const [metricsResult, targetsResult] = await Promise.all([
+        getMetrics(),
+        getMonitoringTargets(),
+      ]);
 
-      if (!cancelled) {
-        setHealth(healthResult.data);
-        setServices(servicesResult.data.services || []);
-        setIncidents(incidentsResult.data.incidents || []);
-      }
+      setMetrics(metricsResult.data.metrics);
+      setMonitoringTargets(targetsResult.data);
+      setMetricsError('');
     } catch (err) {
-      if (!cancelled) {
-        setError(
-          err.response?.data?.message ||
-          'Unable to connect to the AutoHeal backend.'
-        );
-      }
+      setMetricsError(
+        err.response?.data?.message ||
+        'Unable to retrieve Prometheus metrics.'
+      );
     } finally {
-      if (!cancelled) {
-        setLoading(false);
-      }
+      setMetricsLoading(false);
     }
-  };
+  }, []);
 
-  fetchDashboard();
+  // Initial dashboard load
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
 
-  return () => {
-    cancelled = true;
-  };
-}, []);
+  // Refresh Prometheus metrics every 15 seconds
+  useEffect(() => {
+    loadMonitoringData();
 
+    const intervalId = setInterval(loadMonitoringData, 15000);
+
+    return () => clearInterval(intervalId);
+  }, [loadMonitoringData]);
+
+  // Extract Prometheus results
+  const cpuRows = metrics?.cpu || [];
+  const memoryRows = metrics?.memory || [];
+
+  // Calculate aggregate CPU and memory usage
+  const totalCpuCores = cpuRows.reduce(
+    (total, row) => total + Number(row.value?.[1] || 0),
+    0
+  );
+
+  const totalMemoryBytes = memoryRows.reduce(
+    (total, row) => total + Number(row.value?.[1] || 0),
+    0
+  );
+
+  const totalCpuMilliCores = totalCpuCores * 1000;
+  const totalMemoryMiB = totalMemoryBytes / (1024 * 1024);
+
+  // Combine CPU and memory measurements by container
+  const podMetricsMap = new Map();
+
+  cpuRows.forEach((row) => {
+    const labels = row.metric || {};
+
+    const key = `${labels.namespace || 'unknown'}/${labels.pod || labels.container || 'unknown'}/${labels.container || 'unknown'}`;
+
+    podMetricsMap.set(key, {
+      key,
+      namespace: labels.namespace || 'unknown',
+      pod: labels.pod || 'unknown',
+      container: labels.container || 'unknown',
+      cpuCores: Number(row.value?.[1] || 0),
+      memoryBytes: 0,
+    });
+  });
+
+  memoryRows.forEach((row) => {
+    const labels = row.metric || {};
+
+    const key = `${labels.namespace || 'unknown'}/${labels.pod || labels.container || 'unknown'}/${labels.container || 'unknown'}`;
+
+    const existing = podMetricsMap.get(key) || {
+      key,
+      namespace: labels.namespace || 'unknown',
+      pod: labels.pod || 'unknown',
+      container: labels.container || 'unknown',
+      cpuCores: 0,
+      memoryBytes: 0,
+    };
+
+    existing.memoryBytes = Number(row.value?.[1] || 0);
+    podMetricsMap.set(key, existing);
+  });
+
+  const podMetrics = Array.from(podMetricsMap.values()).sort(
+    (a, b) => b.memoryBytes - a.memoryBytes
+  );
+
+  // Resolve an incident
   const handleResolve = async (id) => {
     try {
       setResolving(id);
@@ -151,9 +217,12 @@ function App() {
   ).length;
 
   const pageDescription = {
-    'Service Overview': 'Monitor the health and availability of your application services.',
-    'Infrastructure Monitoring': 'Observe infrastructure performance and resource utilization.',
-    'Incident Management': 'Track incidents, investigate failures and verify recovery.',
+    'Service Overview':
+      'Monitor the health and availability of your application services.',
+    'Infrastructure Monitoring':
+      'Observe infrastructure performance and resource utilization.',
+    'Incident Management':
+      'Track incidents, investigate failures and verify recovery.',
   };
 
   return (
@@ -163,6 +232,7 @@ function App() {
           <div className="brand-icon">
             <ShieldCheck size={23} />
           </div>
+
           <div>
             <h1>AutoHeal</h1>
             <span>Cloud Operations</span>
@@ -188,11 +258,13 @@ function App() {
         <div className="sidebar-bottom">
           <div className="sidebar-status">
             <span className="live-indicator" />
+
             <div>
               <strong>Monitoring workspace</strong>
               <small>Local development</small>
             </div>
           </div>
+
           <div className="sidebar-footer">
             <span>AutoHeal</span>
             <span>v1.0.0</span>
@@ -210,19 +282,34 @@ function App() {
 
           <div className="topbar-actions">
             <div className="connection-status">
-              <span className={health?.database === 'connected' ? 'live-indicator' : 'offline-indicator'} />
-              {health?.database === 'connected' ? 'Backend connected' : 'Backend unavailable'}
+              <span
+                className={
+                  health?.database === 'connected'
+                    ? 'live-indicator'
+                    : 'offline-indicator'
+                }
+              />
+
+              {health?.database === 'connected'
+                ? 'Backend connected'
+                : 'Backend unavailable'}
             </div>
+
             <button
               className="icon-button"
               title="Refresh dashboard"
               onClick={() => {
                 setLoading(true);
                 loadDashboard();
+
+                if (activePage === 'Infrastructure Monitoring') {
+                  loadMonitoringData();
+                }
               }}
             >
               <RefreshCw size={17} />
             </button>
+
             <div className="avatar">AH</div>
           </div>
         </header>
@@ -234,6 +321,7 @@ function App() {
               <h1>{activePage}</h1>
               <p>{pageDescription[activePage]}</p>
             </div>
+
             <div className="page-date">
               <Clock3 size={15} />
               <span>Live dashboard</span>
@@ -255,6 +343,7 @@ function App() {
             </div>
           ) : (
             <>
+              {/* SERVICE OVERVIEW */}
               {activePage === 'Service Overview' && (
                 <>
                   <div className="section-heading">
@@ -262,6 +351,7 @@ function App() {
                       <h2>System overview</h2>
                       <p>Current application and incident summary</p>
                     </div>
+
                     <span className="data-label">DATABASE CONNECTED</span>
                   </div>
 
@@ -273,6 +363,7 @@ function App() {
                       icon={Server}
                       tone="blue"
                     />
+
                     <MetricCard
                       title="Open incidents"
                       value={openIncidents}
@@ -280,6 +371,7 @@ function App() {
                       icon={AlertTriangle}
                       tone="orange"
                     />
+
                     <MetricCard
                       title="Resolved incidents"
                       value={resolvedIncidents}
@@ -287,9 +379,12 @@ function App() {
                       icon={CheckCircle2}
                       tone="green"
                     />
+
                     <MetricCard
                       title="Database"
-                      value={health?.database === 'connected' ? 'Online' : 'Offline'}
+                      value={
+                        health?.database === 'connected' ? 'Online' : 'Offline'
+                      }
                       description="PostgreSQL connectivity"
                       icon={Database}
                       tone="purple"
@@ -303,7 +398,10 @@ function App() {
                           <h3>Application services</h3>
                           <p>Services registered in AutoHeal</p>
                         </div>
-                        <span className="count-pill">{services.length} services</span>
+
+                        <span className="count-pill">
+                          {services.length} services
+                        </span>
                       </div>
 
                       {services.length === 0 ? (
@@ -318,10 +416,12 @@ function App() {
                               <div className="service-symbol">
                                 <Cloud size={19} />
                               </div>
+
                               <div className="service-info">
                                 <strong>{service.name}</strong>
                                 <span>{service.description}</span>
                               </div>
+
                               <StatusBadge status={service.status} />
                             </div>
                           ))}
@@ -335,6 +435,7 @@ function App() {
                           <h3>Backend health</h3>
                           <p>API and database connectivity</p>
                         </div>
+
                         <Wifi size={19} className="muted-icon" />
                       </div>
 
@@ -342,13 +443,17 @@ function App() {
                         <span>Express API</span>
                         <StatusBadge status={health?.status || 'unknown'} />
                       </div>
+
                       <div className="health-item">
                         <span>PostgreSQL</span>
                         <StatusBadge status={health?.database || 'unknown'} />
                       </div>
+
                       <div className="health-note">
                         <CheckCircle2 size={16} />
-                        <span>Connection status from the backend health API.</span>
+                        <span>
+                          Connection status from the backend health API.
+                        </span>
                       </div>
                     </section>
                   </div>
@@ -359,6 +464,7 @@ function App() {
                         <h3>Recent incidents</h3>
                         <p>Latest recorded application incidents</p>
                       </div>
+
                       <button
                         className="text-button"
                         onClick={() => setActivePage('Incident Management')}
@@ -366,6 +472,7 @@ function App() {
                         View all <ChevronRight size={15} />
                       </button>
                     </div>
+
                     <IncidentTable
                       incidents={incidents.slice(0, 5)}
                       onResolve={handleResolve}
@@ -375,38 +482,70 @@ function App() {
                 </>
               )}
 
+              {/* INFRASTRUCTURE MONITORING */}
               {activePage === 'Infrastructure Monitoring' && (
                 <>
                   <div className="section-heading">
                     <div>
                       <h2>Infrastructure resources</h2>
-                      <p>Metrics collected from monitored infrastructure</p>
+                      <p>
+                        Live Kubernetes metrics collected by Prometheus
+                      </p>
                     </div>
-                    <span className="data-label">PROMETHEUS NOT CONNECTED</span>
+
+                    <span className="data-label">
+                      {monitoringTargets &&
+                      monitoringTargets.unhealthy === 0
+                        ? `PROMETHEUS CONNECTED · ${monitoringTargets.healthy}/${monitoringTargets.total} TARGETS UP`
+                        : 'PROMETHEUS CHECKING'}
+                    </span>
                   </div>
+
+                  {metricsError && (
+                    <div className="error-banner">
+                      <AlertCircle size={18} />
+                      <span>{metricsError}</span>
+                      <button onClick={loadMonitoringData}>Retry</button>
+                    </div>
+                  )}
 
                   <div className="metrics-grid">
                     <MetricCard
-                      title="CPU utilization"
-                      value="—"
-                      description="Waiting for Prometheus metrics"
+                      title="CPU usage"
+                      value={
+                        metrics
+                          ? `${totalCpuMilliCores.toFixed(1)} mCPU`
+                          : '—'
+                      }
+                      description="Combined container CPU rate over 5 minutes"
                       icon={Cpu}
                       tone="blue"
                     />
+
                     <MetricCard
-                      title="Memory utilization"
-                      value="—"
-                      description="Waiting for Prometheus metrics"
+                      title="Memory usage"
+                      value={
+                        metrics
+                          ? `${totalMemoryMiB.toFixed(1)} MiB`
+                          : '—'
+                      }
+                      description="Combined container working-set memory"
                       icon={Activity}
                       tone="purple"
                     />
+
                     <MetricCard
-                      title="Monitored services"
-                      value={services.length}
-                      description="Registered application services"
-                      icon={Server}
+                      title="Healthy targets"
+                      value={
+                        monitoringTargets
+                          ? `${monitoringTargets.healthy}/${monitoringTargets.total}`
+                          : '—'
+                      }
+                      description="Prometheus scrape targets currently up"
+                      icon={CheckCircle2}
                       tone="green"
                     />
+
                     <MetricCard
                       title="Open incidents"
                       value={openIncidents}
@@ -419,24 +558,117 @@ function App() {
                   <section className="panel monitoring-panel">
                     <div className="panel-heading">
                       <div>
-                        <h3>Resource utilization</h3>
-                        <p>CPU and memory usage over time</p>
+                        <h3>Container resource usage</h3>
+                        <p>
+                          CPU rate and working-set memory reported by cAdvisor
+                        </p>
                       </div>
+
+                      <div className="connection-status">
+                        {metricsLoading
+                          ? 'Refreshing…'
+                          : 'Refreshes every 15 seconds'}
+                      </div>
+                    </div>
+
+                    {podMetrics.length === 0 ? (
+                      <div className="empty-state">
+                        <Activity size={25} />
+                        <p>
+                          {metricsLoading
+                            ? 'Loading Prometheus metrics…'
+                            : 'No container metrics are currently available.'}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="table-wrapper">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>NAMESPACE</th>
+                              <th>POD</th>
+                              <th>CONTAINER</th>
+                              <th>CPU</th>
+                              <th>MEMORY</th>
+                            </tr>
+                          </thead>
+
+                          <tbody>
+                            {podMetrics.map((pod) => (
+                              <tr key={pod.key}>
+                                <td>{pod.namespace}</td>
+                                <td>{pod.pod}</td>
+                                <td>{pod.container}</td>
+                                <td>
+                                  {(pod.cpuCores * 1000).toFixed(2)} mCPU
+                                </td>
+                                <td>
+                                  {(
+                                    pod.memoryBytes /
+                                    (1024 * 1024)
+                                  ).toFixed(1)}{' '}
+                                  MiB
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="panel monitoring-panel">
+                    <div className="panel-heading">
+                      <div>
+                        <h3>Prometheus scrape targets</h3>
+                        <p>
+                          Health of the configured Kubernetes and Prometheus
+                          scrapes
+                        </p>
+                      </div>
+
                       <Activity size={19} className="muted-icon" />
                     </div>
-                    <div className="integration-empty">
-                      <div className="empty-icon"><Activity size={27} /></div>
-                      <h3>Metrics collection not configured</h3>
-                      <p>
-                        Prometheus integration will provide real-time CPU,
-                        memory and infrastructure metrics here.
-                      </p>
-                      <span className="integration-tag">PROMETHEUS · GRAFANA</span>
-                    </div>
+
+                    {!monitoringTargets ? (
+                      <div className="empty-state">
+                        <p>
+                          {metricsLoading
+                            ? 'Checking Prometheus targets…'
+                            : 'Target information is unavailable.'}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="service-list">
+                        {monitoringTargets.targets.map((target) => (
+                          <div
+                            className="service-row"
+                            key={`${target.job}-${target.instance}`}
+                          >
+                            <div className="service-symbol">
+                              <Activity size={19} />
+                            </div>
+
+                            <div className="service-info">
+                              <strong>{target.job}</strong>
+                              <span>
+                                {target.instance}
+                                {target.lastError
+                                  ? ` · ${target.lastError}`
+                                  : ''}
+                              </span>
+                            </div>
+
+                            <StatusBadge status={target.health} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </section>
                 </>
               )}
 
+              {/* INCIDENT MANAGEMENT */}
               {activePage === 'Incident Management' && (
                 <>
                   <div className="section-heading">
@@ -444,7 +676,10 @@ function App() {
                       <h2>Incident records</h2>
                       <p>Review and manage recorded application incidents</p>
                     </div>
-                    <span className="count-pill">{incidents.length} total</span>
+
+                    <span className="count-pill">
+                      {incidents.length} total
+                    </span>
                   </div>
 
                   <div className="metrics-grid incident-metrics">
@@ -455,6 +690,7 @@ function App() {
                       icon={AlertCircle}
                       tone="blue"
                     />
+
                     <MetricCard
                       title="Open"
                       value={openIncidents}
@@ -462,6 +698,7 @@ function App() {
                       icon={AlertTriangle}
                       tone="orange"
                     />
+
                     <MetricCard
                       title="Resolved"
                       value={resolvedIncidents}
@@ -469,9 +706,14 @@ function App() {
                       icon={CheckCircle2}
                       tone="green"
                     />
+
                     <MetricCard
                       title="High severity"
-                      value={incidents.filter((item) => item.severity === 'high').length}
+                      value={
+                        incidents.filter(
+                          (item) => item.severity === 'high'
+                        ).length
+                      }
                       description="High-severity records"
                       icon={ArrowUpRight}
                       tone="purple"
@@ -484,8 +726,10 @@ function App() {
                         <h3>All incidents</h3>
                         <p>Incident history from PostgreSQL</p>
                       </div>
+
                       <span className="data-label">LIVE API DATA</span>
                     </div>
+
                     <IncidentTable
                       incidents={incidents}
                       onResolve={handleResolve}
@@ -498,7 +742,9 @@ function App() {
           )}
 
           <footer className="page-footer">
-            <span>AutoHeal Cloud Monitoring &amp; Self-Recovery Platform</span>
+            <span>
+              AutoHeal Cloud Monitoring &amp; Self-Recovery Platform
+            </span>
             <span>Built for cloud-native operations</span>
           </footer>
         </section>
@@ -530,25 +776,35 @@ function IncidentTable({ incidents, onResolve, resolving }) {
             <th>ACTION</th>
           </tr>
         </thead>
+
         <tbody>
           {incidents.map((incident) => (
             <tr key={incident.id}>
               <td>
                 <div className="incident-title">
                   <strong>{incident.title}</strong>
-                  <span>INC-{String(incident.id).padStart(4, '0')}</span>
+                  <span>
+                    INC-{String(incident.id).padStart(4, '0')}
+                  </span>
                 </div>
               </td>
+
               <td>{incident.service_name || 'Unassigned'}</td>
+
               <td>
                 <span className={`severity severity-${incident.severity}`}>
                   {incident.severity}
                 </span>
               </td>
-              <td><StatusBadge status={incident.status} /></td>
+
+              <td>
+                <StatusBadge status={incident.status} />
+              </td>
+
               <td>
                 {new Date(incident.detected_at).toLocaleString()}
               </td>
+
               <td>
                 {incident.status === 'open' ? (
                   <button
